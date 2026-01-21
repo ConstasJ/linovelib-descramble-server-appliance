@@ -28,10 +28,6 @@ session.headers = {
     "origin": "https://www.linovelib.com",
     "referer": "https://www.linovelib.com/",
 }
-session.proxies = {
-    "http": "http://127.0.0.1:9000",
-    "https": "http://127.0.0.1:9000",
-}
 
 flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 
@@ -67,6 +63,8 @@ def fetch_cf_clearance():
                 cookie_cache.set(cookie["name"], cookie["value"])
     else:
         raise Exception("Failed to solve Cloudflare challenge")
+    
+session.get("https://www.linovelib.com/")
 
 class MakeRequestModel(BaseModel):
     path: str
@@ -81,7 +79,6 @@ app = FastAPI()
 @app.post("/request")
 async def create_request(request: MakeRequestModel) -> MakeRequestResponseModel:
     full_url = f"https://www.linovelib.com{request.path}"   
-    session.get("https://www.linovelib.com/")
     if request.method == "GET":
         res = session.get(full_url, cookies=cookie_cache)
     else:
