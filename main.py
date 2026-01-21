@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from typing import Literal, Dict
 from pydantic import BaseModel
 import requests_go as requests
@@ -6,6 +6,9 @@ from requests_go.tls_config import TLS_CHROME_LATEST
 from compression import zstd
 from requests.cookies import RequestsCookieJar
 import os
+import logging
+import time
+from datetime import datetime, timezone
 
 session = requests.Session()
 session.tls_config = TLS_CHROME_LATEST
@@ -76,6 +79,45 @@ class MakeRequestResponseModel(BaseModel):
     content: str
 
 app = FastAPI()
+
+# 设置基础日志配置
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger("access")
+
+@app.middleware("http")
+async def combined_log_format(request: Request, call_next):
+    # 记录开始时间（用于计算处理时长，可选）
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    # --- 修复时间格式的部分 ---
+    # 获取本地时间，并自动附加时区信息（如 +0800）
+    now = datetime.now().astimezone()
+    # 格式化为 Apache 标准：[22/Jan/2026:10:00:00 +0800]
+    timestamp = now.strftime("%d/%b/%Y:%H:%M:%S %z")
+    # -----------------------
+
+    client_host = request.client.host
+    method = request.method
+    uri = request.url.path
+    if request.url.query:
+        uri += f"?{request.url.query}"
+    
+    protocol = f"HTTP/{request.scope.get('http_version', '1.1')}"
+    status_code = response.status_code
+    res_size = response.headers.get("content-length", "0")
+    referer = request.headers.get("referer", "-")
+    user_agent = request.headers.get("user-agent", "-")
+
+    log_message = (
+        f'{client_host} - - [{timestamp}] '
+        f'"{method} {uri} {protocol}" {status_code} {res_size} '
+        f'"{referer}" "{user_agent}"'
+    )
+    
+    logger.info(log_message)
+    return response
 
 @app.post("/request")
 async def create_request(request: MakeRequestModel) -> MakeRequestResponseModel: 
