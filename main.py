@@ -29,11 +29,6 @@ session.headers = {
     "referer": "https://www.linovelib.com/",
 }
 
-session.proxies = {
-    "http": "http://127.0.0.1:9000",
-    "https": "http://127.0.0.1:9000",
-}
-
 flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 
 cookie_cache = RequestsCookieJar()
