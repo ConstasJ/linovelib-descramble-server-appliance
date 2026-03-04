@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from starlette.responses import Response
 from typing import Literal, Dict
 from pydantic import BaseModel
 import requests_go as requests
@@ -32,32 +33,44 @@ session.headers = {
     "referer": "https://www.linovelib.com/",
 }
 
+session.proxies = {
+    "http": os.getenv("HTTP_PROXY", ""),
+    "https": os.getenv("HTTPS_PROXY", ""),
+}
+
 flaresolverr_url = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 
 cookie_cache = RequestsCookieJar()
 
 flaresolverr_session_initialized = False
 
+
 def fetch_cf_clearance():
     global flaresolverr_session_initialized, cookie_cache, flaresolverr_url
     if not flaresolverr_session_initialized:
-        session_list_res = requests.post(flaresolverr_url, json={
-            "cmd": "sessions.list",
-        })
+        session_list_res = requests.post(
+            flaresolverr_url,
+            json={
+                "cmd": "sessions.list",
+            },
+        )
         session_list: list = session_list_res.json()["sessions"]
         if "ldsa_session" not in session_list:
-            requests.post(flaresolverr_url, json={
-                "cmd": "sessions.create",
-                "session": "ldsa_session"
-            })
+            requests.post(
+                flaresolverr_url,
+                json={"cmd": "sessions.create", "session": "ldsa_session"},
+            )
         else:
             flaresolverr_session_initialized = True
-    res = requests.post(flaresolverr_url, json={
-        "cmd": "request.get",
-        "url": "https://www.linovelib.com/S6",
-        "maxTimeout": 60000,
-        "session": "ldsa_session"
-    })
+    res = requests.post(
+        flaresolverr_url,
+        json={
+            "cmd": "request.get",
+            "url": "https://www.linovelib.com/S6",
+            "maxTimeout": 60000,
+            "session": "ldsa_session",
+        },
+    )
     resObj = res.json()
     if resObj["status"] == "ok":
         cookies = resObj["solution"]["cookies"]
@@ -66,8 +79,10 @@ def fetch_cf_clearance():
                 cookie_cache.set(cookie["name"], cookie["value"])
     else:
         raise Exception("Failed to solve Cloudflare challenge")
-    
+
+
 session.get("https://www.linovelib.com/")
+
 
 class MakeRequestModel(BaseModel):
     url: str
@@ -75,22 +90,25 @@ class MakeRequestModel(BaseModel):
     data: str | None = None
     cookies: Dict[str, str] | None = None
 
+
 class MakeRequestResponseModel(BaseModel):
     content: str
+
 
 app = FastAPI()
 
 # 设置基础日志配置
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("access")
+
 
 @app.middleware("http")
 async def combined_log_format(request: Request, call_next):
     # 记录开始时间（用于计算处理时长，可选）
     start_time = time.time()
-    
+
     response = await call_next(request)
-    
+
     # --- 修复时间格式的部分 ---
     # 获取本地时间，并自动附加时区信息（如 +0800）
     now = datetime.now().astimezone()
@@ -98,12 +116,12 @@ async def combined_log_format(request: Request, call_next):
     timestamp = now.strftime("%d/%b/%Y:%H:%M:%S %z")
     # -----------------------
 
-    client_host = request.client.host
+    client_host = request.client.host if request.client else "-"
     method = request.method
     uri = request.url.path
     if request.url.query:
         uri += f"?{request.url.query}"
-    
+
     protocol = f"HTTP/{request.scope.get('http_version', '1.1')}"
     status_code = response.status_code
     res_size = response.headers.get("content-length", "0")
@@ -111,36 +129,86 @@ async def combined_log_format(request: Request, call_next):
     user_agent = request.headers.get("user-agent", "-")
 
     log_message = (
-        f'{client_host} - - [{timestamp}] '
+        f"{client_host} - - [{timestamp}] "
         f'"{method} {uri} {protocol}" {status_code} {res_size} '
         f'"{referer}" "{user_agent}"'
     )
-    
+
     logger.info(log_message)
     return response
 
-@app.post("/request")
-async def create_request(request: MakeRequestModel) -> MakeRequestResponseModel: 
+
+def response_is_textual(content_type: str) -> bool:
+    textual_types = [
+        "text/",
+        "application/json",
+        "application/xml",
+        "application/xhtml+xml",
+    ]
+    return any(content_type.startswith(t) for t in textual_types)
+
+
+def _do_request(req: MakeRequestModel) -> requests.Response:
     global cookie_cache
-    if request.cookies:
-        for key, value in request.cookies.items():
+    if req.cookies:
+        for key, value in req.cookies.items():
             cookie_cache.set(key, value)
-    if request.method == "GET":
-        res = session.get(request.url, cookies=cookie_cache)
+
+    if req.method == "GET":
+        res = session.get(req.url, cookies=cookie_cache)
         if res.status_code == 403:
             fetch_cf_clearance()
-            res = session.get(request.url, cookies=cookie_cache)
+            res = session.get(req.url, cookies=cookie_cache)
     else:
+        data = req.data or ""
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
-            "Content-Length": str(len(request.data))
+            "Content-Length": str(len(data)),
         }
-        res = session.post(request.url, data=request.data, cookies=cookie_cache, headers=headers)
+        res = session.post(req.url, data=data, cookies=cookie_cache, headers=headers)
         if res.status_code == 403:
             fetch_cf_clearance()
-            res = session.post(request.url, data=request.data, cookies=cookie_cache, headers=headers)
-    if res.headers.get("Content-Encoding") == "zstd":
-        decompressed_content = zstd.decompress(res.content).decode("utf-8")
-        return MakeRequestResponseModel(content=decompressed_content)
-    else:
-        return MakeRequestResponseModel(content=res.content.decode("utf-8"))
+            res = session.post(
+                req.url, data=data, cookies=cookie_cache, headers=headers
+            )
+
+    return res
+
+
+@app.post("/request")
+async def create_request(request: MakeRequestModel) -> MakeRequestResponseModel:
+    res = _do_request(request)
+
+    if response_is_textual(res.headers.get("Content-Type", "")):
+        if res.headers.get("Content-Encoding") == "zstd":
+            decompressed_content = zstd.decompress(res.content).decode("utf-8")
+            return MakeRequestResponseModel(content=decompressed_content)
+        else:
+            return MakeRequestResponseModel(content=res.content.decode("utf-8"))
+
+    raise HTTPException(
+        status_code=500,
+        detail="Non-textual response is not supported in /request, use /request-binary",
+    )
+
+
+@app.post("/request-binary")
+async def create_request_binary(request: MakeRequestModel) -> Response:
+    try:
+        res = _do_request(request)
+        original_content_type = res.headers.get(
+            "Content-Type", "application/octet-stream"
+        )
+
+        if res.headers.get("Content-Encoding") == "zstd":
+            raw_content = zstd.decompress(res.content)
+        else:
+            raw_content = res.content
+
+        return Response(
+            content=raw_content,
+            media_type=original_content_type,
+            headers={"X-Original-Content-Type": original_content_type},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"/request-binary failed: {str(e)}")
