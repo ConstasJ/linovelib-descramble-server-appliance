@@ -144,6 +144,8 @@ def response_is_textual(content_type: str) -> bool:
         "application/json",
         "application/xml",
         "application/xhtml+xml",
+        "application/javascript",
+        "application/x-javascript",
     ]
     return any(content_type.startswith(t) for t in textual_types)
 
